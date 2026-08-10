@@ -1,0 +1,17 @@
+{
+  "name": "mkv-ac3-browser-merger",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@ffmpeg/ffmpeg": "^0.12.15",
+    "@ffmpeg/util": "^0.12.2",
+    "vite": "^7.0.0"
+  },
+  "devDependencies": {}
+}
