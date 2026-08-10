@@ -463,6 +463,31 @@
     els.errorBox.classList.add('show');
   }
 
+  // race a promise against a timeout so a blocked/hanging network request
+  // surfaces as an error instead of freezing the UI forever
+  function withTimeout(promise, ms, label){
+    let t;
+    const timeout = new Promise((_, reject) => {
+      t = setTimeout(() => reject(new Error(`Timed out ${label} (>${ms/1000}s). This usually means the request to the CDN is being blocked by this browser/preview environment.`)), ms);
+    });
+    return Promise.race([promise, timeout]).finally(() => clearTimeout(t));
+  }
+
+  // try a list of module URLs in order, first one that resolves wins
+  async function importWithFallback(urls, label){
+    let lastErr;
+    for (const url of urls){
+      try {
+        logLine(`→ trying ${label} from ${url}`);
+        return await withTimeout(import(url), 15000, `loading ${label}`);
+      } catch (e){
+        lastErr = e;
+        logLine(`✗ failed: ${e.message}`);
+      }
+    }
+    throw lastErr;
+  }
+
   els.goBtn.addEventListener('click', async () => {
     els.errorBox.classList.remove('show');
     els.result.classList.remove('show');
@@ -474,8 +499,16 @@
 
     try {
       if (!ffmpeg){
-        const { FFmpeg } = await import('https://esm.sh/@ffmpeg/ffmpeg@0.12.10');
-        const { fetchFile, toBlobURL } = await import('https://esm.sh/@ffmpeg/util@0.12.1');
+        const ffmpegMod = await importWithFallback([
+          'https://esm.sh/@ffmpeg/ffmpeg@0.12.10',
+          'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/+esm',
+        ], '@ffmpeg/ffmpeg');
+        const utilMod = await importWithFallback([
+          'https://esm.sh/@ffmpeg/util@0.12.1',
+          'https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/+esm',
+        ], '@ffmpeg/util');
+        const { FFmpeg } = ffmpegMod;
+        const { fetchFile, toBlobURL } = utilMod;
         window.__fetchFile = fetchFile;
 
         ffmpeg = new FFmpeg();
@@ -484,32 +517,57 @@
           if (progress >= 0 && progress <= 1) setStage('Merging streams…', 15 + progress * 80);
         });
 
-        const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
-        await ffmpeg.load({
-          coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
-          wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
-        });
+        setStage('Downloading FFmpeg core (~30MB, first run only)…', 5);
+        let loaded = false;
+        let lastErr;
+        for (const baseURL of [
+          'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd',
+          'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd',
+        ]){
+          try {
+            const coreURL = await withTimeout(toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'), 30000, 'downloading ffmpeg-core.js');
+            const wasmURL = await withTimeout(toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'), 30000, 'downloading ffmpeg-core.wasm');
+            await withTimeout(ffmpeg.load({ coreURL, wasmURL }), 30000, 'initializing ffmpeg core');
+            loaded = true;
+            break;
+          } catch (e){
+            lastErr = e;
+            logLine(`✗ core load failed from ${baseURL}: ${e.message}`);
+          }
+        }
+        if (!loaded) throw lastErr;
       }
 
-      setStage('Reading files into browser memory…', 10);
-      const fetchFile = window.__fetchFile;
-      await ffmpeg.writeFile('input.mkv', await fetchFile(mkvFile));
-      await ffmpeg.writeFile('input.ac3', await fetchFile(ac3File));
-
+      setStage('Mounting files (no copy into memory)…', 12);
       const mode = els.mode.value; // 'add' or 'replace'
+
+      // Mount the actual File objects via WORKERFS instead of reading them
+      // fully into an ArrayBuffer and copying into MEMFS. This avoids
+      // double-buffering large files and lets ffmpeg stream reads directly
+      // from disk-backed File objects, which matters a lot once you're
+      // above ~1-2GB.
+      try { await ffmpeg.unmount('/work'); } catch (e) {}
+      try { await ffmpeg.deleteDir('/work'); } catch (e) {}
+      await ffmpeg.createDir('/work');
+      await ffmpeg.mount('WORKERFS', { files: [mkvFile, ac3File] }, '/work');
+
+      const mkvPath = `/work/${mkvFile.name}`;
+      const ac3Path = `/work/${ac3File.name}`;
+
       let args;
       if (mode === 'replace'){
-        args = ['-i','input.mkv','-i','input.ac3',
+        args = ['-i', mkvPath, '-i', ac3Path,
                 '-map','0:v','-map','1:a',
                 '-map','0:s?','-c','copy','output.mkv'];
       } else {
-        args = ['-i','input.mkv','-i','input.ac3',
+        args = ['-i', mkvPath, '-i', ac3Path,
                 '-map','0:v','-map','0:a?','-map','1:a',
                 '-map','0:s?','-c','copy','output.mkv'];
       }
 
       setStage('Merging streams…', 15);
       await ffmpeg.exec(args);
+      try { await ffmpeg.unmount('/work'); } catch (e) {}
 
       setStage('Preparing download…', 96);
       const data = await ffmpeg.readFile('output.mkv');
@@ -528,8 +586,12 @@
     } catch (err) {
       console.error(err);
       meterEl.classList.remove('live');
-      showError('Merge failed: ' + (err && err.message ? err.message : String(err)) +
-        '. Very large files can exceed the in-browser memory limit — try a smaller file or check that the AC3 track matches the video length.');
+      const msg = err && err.message ? err.message : String(err);
+      const isNetworky = /timed out|network|fetch|failed to fetch/i.test(msg);
+      showError('Merge failed: ' + msg +
+        (isNetworky
+          ? ' — this looks like the FFmpeg download is being blocked. Try opening this saved HTML file directly in a desktop browser (Chrome, Firefox, or Edge) rather than an in-app preview, and check that no ad-blocker/extension is blocking unpkg.com, esm.sh, or jsdelivr.net.'
+          : ' Very large files can exceed the in-browser memory limit — try a smaller file or check that the AC3 track matches the video length.'));
       setStage('Failed', 0);
     } finally {
       els.goBtn.disabled = false;
