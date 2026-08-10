@@ -1,14 +1,541 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="description" content="Merge an MKV video with an external AC3 audio track entirely in your browser." />
-    <meta name="theme-color" content="#111827" />
-    <title>MKV + AC3 Merger</title>
-  </head>
-  <body>
-    <div id="app"></div>
-    <script type="module" src="/src/main.js"></script>
-  </body>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Track Splice — Local MKV + AC3 Merger</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#14171c;
+    --surface:#1b2028;
+    --surface-2:#20262f;
+    --line:#2a313c;
+    --text:#e9e7e0;
+    --muted:#8b93a1;
+    --amber:#e8a13a;
+    --amber-dim:#a9772c;
+    --red:#d64545;
+    --green:#5fb98c;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    background:
+      radial-gradient(ellipse at top, #1a2029 0%, var(--bg) 55%);
+    color:var(--text);
+    font-family:'Inter',sans-serif;
+    min-height:100vh;
+    padding:48px 20px 80px;
+  }
+  .wrap{max-width:760px;margin:0 auto;}
+
+  /* header */
+  header{margin-bottom:36px;}
+  .eyebrow{
+    font-family:'JetBrains Mono',monospace;
+    font-size:12px;
+    letter-spacing:.14em;
+    color:var(--amber);
+    text-transform:uppercase;
+    display:flex;
+    align-items:center;
+    gap:10px;
+    margin-bottom:14px;
+  }
+  .eyebrow::before{
+    content:"";
+    width:7px;height:7px;border-radius:50%;
+    background:var(--green);
+    box-shadow:0 0 0 3px rgba(95,185,140,.15);
+  }
+  h1{
+    font-family:'JetBrains Mono',monospace;
+    font-weight:700;
+    font-size:clamp(28px,5vw,38px);
+    letter-spacing:-0.01em;
+    margin:0 0 12px;
+    line-height:1.15;
+  }
+  h1 span{color:var(--amber);}
+  header p{
+    color:var(--muted);
+    font-size:15px;
+    line-height:1.6;
+    margin:0;
+    max-width:56ch;
+  }
+
+  /* meter strip - signature element */
+  .meter{
+    display:flex;
+    gap:3px;
+    height:20px;
+    margin:22px 0 0;
+    align-items:flex-end;
+  }
+  .meter i{
+    flex:1;
+    background:var(--line);
+    border-radius:1px;
+    height:30%;
+    transition:background .2s ease, height .2s ease;
+  }
+  .meter.live i{ animation: bounce 1.1s ease-in-out infinite; background:var(--amber-dim); }
+  .meter.live i:nth-child(odd){ animation-delay:.15s; }
+  .meter.live i:nth-child(3n){ animation-delay:.3s; background:var(--amber); }
+  .meter.live i:nth-child(5n){ animation-delay:.45s; }
+  @keyframes bounce{
+    0%,100%{height:20%;}
+    50%{height:100%;}
+  }
+  @media (prefers-reduced-motion: reduce){
+    .meter.live i{ animation:none; height:60%; }
+  }
+
+  /* panel */
+  .panel{
+    background:var(--surface);
+    border:1px solid var(--line);
+    border-radius:14px;
+    padding:28px;
+    margin-top:28px;
+  }
+
+  .slots{
+    display:grid;
+    grid-template-columns:1fr auto 1fr;
+    gap:14px;
+    align-items:stretch;
+  }
+  @media (max-width:560px){
+    .slots{grid-template-columns:1fr;}
+    .plus{transform:rotate(45deg); margin:2px auto;}
+  }
+  .plus{
+    align-self:center;
+    font-family:'JetBrains Mono',monospace;
+    color:var(--muted);
+    font-size:20px;
+  }
+
+  .slot{
+    background:var(--surface-2);
+    border:1.5px dashed var(--line);
+    border-radius:10px;
+    padding:20px 16px;
+    text-align:center;
+    cursor:pointer;
+    transition:border-color .15s ease, background .15s ease;
+    position:relative;
+  }
+  .slot:hover{border-color:var(--amber-dim);}
+  .slot.filled{border-style:solid; border-color:var(--green); background:#1b2620;}
+  .slot input{display:none;}
+  .slot .tag{
+    font-family:'JetBrains Mono',monospace;
+    font-size:11px;
+    letter-spacing:.1em;
+    color:var(--amber);
+    text-transform:uppercase;
+    display:block;
+    margin-bottom:8px;
+  }
+  .slot .fname{
+    font-size:13px;
+    color:var(--text);
+    word-break:break-all;
+    line-height:1.4;
+  }
+  .slot .hint{
+    font-size:12px;
+    color:var(--muted);
+  }
+  .slot .fsize{
+    font-family:'JetBrains Mono',monospace;
+    font-size:11px;
+    color:var(--muted);
+    margin-top:4px;
+  }
+
+  .options{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:16px;
+    margin-top:22px;
+    padding-top:20px;
+    border-top:1px solid var(--line);
+    flex-wrap:wrap;
+  }
+  .options label{
+    font-size:13px;
+    color:var(--muted);
+  }
+  select{
+    background:var(--surface-2);
+    color:var(--text);
+    border:1px solid var(--line);
+    border-radius:7px;
+    padding:8px 10px;
+    font-family:'Inter',sans-serif;
+    font-size:13px;
+  }
+
+  .go{
+    margin-top:22px;
+    width:100%;
+    padding:15px;
+    border:none;
+    border-radius:9px;
+    background:var(--amber);
+    color:#1a1406;
+    font-family:'JetBrains Mono',monospace;
+    font-weight:700;
+    font-size:14px;
+    letter-spacing:.03em;
+    cursor:pointer;
+    transition:transform .1s ease, background .15s ease;
+  }
+  .go:hover:not(:disabled){background:#f2b155;}
+  .go:active:not(:disabled){transform:scale(.99);}
+  .go:disabled{
+    background:var(--line);
+    color:var(--muted);
+    cursor:not-allowed;
+  }
+
+  /* progress + log */
+  .status{margin-top:24px; display:none;}
+  .status.show{display:block;}
+  .barrow{
+    display:flex;
+    justify-content:space-between;
+    font-family:'JetBrains Mono',monospace;
+    font-size:12px;
+    color:var(--muted);
+    margin-bottom:8px;
+  }
+  .bar-track{
+    height:8px;
+    background:var(--surface-2);
+    border-radius:4px;
+    overflow:hidden;
+    border:1px solid var(--line);
+  }
+  .bar-fill{
+    height:100%;
+    width:0%;
+    background:linear-gradient(90deg,var(--amber-dim),var(--amber));
+    transition:width .2s ease;
+  }
+  .log{
+    margin-top:14px;
+    background:#0f1216;
+    border:1px solid var(--line);
+    border-radius:8px;
+    padding:12px 14px;
+    font-family:'JetBrains Mono',monospace;
+    font-size:11.5px;
+    line-height:1.6;
+    color:#9fb0bd;
+    max-height:160px;
+    overflow-y:auto;
+    white-space:pre-wrap;
+    word-break:break-all;
+  }
+
+  .result{
+    display:none;
+    margin-top:20px;
+    background:#182620;
+    border:1px solid #2c4438;
+    border-radius:10px;
+    padding:18px 20px;
+    align-items:center;
+    justify-content:space-between;
+    gap:14px;
+    flex-wrap:wrap;
+  }
+  .result.show{display:flex;}
+  .result .info{font-size:13px; color:var(--text);}
+  .result .info b{color:var(--green); display:block; font-family:'JetBrains Mono',monospace; font-size:13px; margin-bottom:2px;}
+  .dl{
+    background:var(--green);
+    color:#0e1a14;
+    border:none;
+    border-radius:8px;
+    padding:10px 18px;
+    font-weight:700;
+    font-size:13px;
+    text-decoration:none;
+    cursor:pointer;
+    font-family:'Inter',sans-serif;
+  }
+
+  .error{
+    display:none;
+    margin-top:16px;
+    background:#2a1616;
+    border:1px solid #4a2323;
+    color:#f0a3a3;
+    border-radius:8px;
+    padding:12px 16px;
+    font-size:13px;
+    line-height:1.5;
+  }
+  .error.show{display:block;}
+
+  footer{
+    margin-top:30px;
+    font-size:12px;
+    color:var(--muted);
+    line-height:1.7;
+    text-align:center;
+  }
+  footer a{color:var(--amber-dim);}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="eyebrow">100% local · nothing leaves your device</div>
+    <h1>Track Splice<span>.</span></h1>
+    <p>Drop in an MKV and an AC3 track. FFmpeg compiled to WebAssembly runs the mux entirely inside this browser tab — no upload, no server, no waiting on a connection.</p>
+    <div class="meter" id="meter"><!-- bars injected --></div>
+  </header>
+
+  <div class="panel">
+    <div class="slots">
+      <label class="slot" id="slotMkv">
+        <input type="file" id="mkvInput" accept=".mkv,video/x-matroska">
+        <span class="tag">Video</span>
+        <span class="fname" id="mkvName">Choose .mkv file</span>
+        <span class="hint" id="mkvHint">Click or drop here</span>
+        <span class="fsize" id="mkvSize"></span>
+      </label>
+      <div class="plus">+</div>
+      <label class="slot" id="slotAc3">
+        <input type="file" id="ac3Input" accept=".ac3,audio/ac3">
+        <span class="tag">Audio</span>
+        <span class="fname" id="ac3Name">Choose .ac3 file</span>
+        <span class="hint" id="ac3Hint">Click or drop here</span>
+        <span class="fsize" id="ac3Size"></span>
+      </label>
+    </div>
+
+    <div class="options">
+      <label for="mode">If the MKV already has audio:</label>
+      <select id="mode">
+        <option value="add">Keep it — add AC3 as a new track</option>
+        <option value="replace">Replace it with the AC3 track</option>
+      </select>
+    </div>
+
+    <button class="go" id="goBtn" disabled>Select both files to enable merge</button>
+
+    <div class="status" id="status">
+      <div class="barrow"><span id="stageLabel">Loading FFmpeg core…</span><span id="pct">0%</span></div>
+      <div class="bar-track"><div class="bar-fill" id="barFill"></div></div>
+      <div class="log" id="log"></div>
+    </div>
+
+    <div class="error" id="errorBox"></div>
+
+    <div class="result" id="result">
+      <div class="info"><b id="resultName">output.mkv</b><span id="resultSize"></span></div>
+      <a class="dl" id="dlBtn" download="merged.mkv">Download MKV</a>
+    </div>
+  </div>
+
+  <footer>
+    Best for files under a few hundred MB — the WebAssembly build is single-threaded and memory-limited, so very large sources may run out of memory in-tab.<br>
+    Stream copy is used throughout (no re-encode), so the merge is fast and lossless.
+  </footer>
+</div>
+
+<script type="module">
+  // build the meter bars
+  const meterEl = document.getElementById('meter');
+  for (let i = 0; i < 28; i++) { const b = document.createElement('i'); meterEl.appendChild(b); }
+
+  const els = {
+    mkvInput: document.getElementById('mkvInput'),
+    ac3Input: document.getElementById('ac3Input'),
+    slotMkv: document.getElementById('slotMkv'),
+    slotAc3: document.getElementById('slotAc3'),
+    mkvName: document.getElementById('mkvName'),
+    ac3Name: document.getElementById('ac3Name'),
+    mkvHint: document.getElementById('mkvHint'),
+    ac3Hint: document.getElementById('ac3Hint'),
+    mkvSize: document.getElementById('mkvSize'),
+    ac3Size: document.getElementById('ac3Size'),
+    mode: document.getElementById('mode'),
+    goBtn: document.getElementById('goBtn'),
+    status: document.getElementById('status'),
+    stageLabel: document.getElementById('stageLabel'),
+    pct: document.getElementById('pct'),
+    barFill: document.getElementById('barFill'),
+    log: document.getElementById('log'),
+    errorBox: document.getElementById('errorBox'),
+    result: document.getElementById('result'),
+    resultName: document.getElementById('resultName'),
+    resultSize: document.getElementById('resultSize'),
+    dlBtn: document.getElementById('dlBtn'),
+  };
+
+  let mkvFile = null, ac3File = null, ffmpeg = null;
+
+  function fmtSize(bytes){
+    if (bytes < 1024*1024) return (bytes/1024).toFixed(0) + ' KB';
+    return (bytes/(1024*1024)).toFixed(1) + ' MB';
+  }
+
+  function refreshGoState(){
+    if (mkvFile && ac3File){
+      els.goBtn.disabled = false;
+      els.goBtn.textContent = 'Merge';
+    } else {
+      els.goBtn.disabled = true;
+      els.goBtn.textContent = 'Select both files to enable merge';
+    }
+  }
+
+  els.mkvInput.addEventListener('change', e => {
+    const f = e.target.files[0];
+    if (!f) return;
+    mkvFile = f;
+    els.mkvName.textContent = f.name;
+    els.mkvHint.textContent = 'Selected';
+    els.mkvSize.textContent = fmtSize(f.size);
+    els.slotMkv.classList.add('filled');
+    refreshGoState();
+  });
+
+  els.ac3Input.addEventListener('change', e => {
+    const f = e.target.files[0];
+    if (!f) return;
+    ac3File = f;
+    els.ac3Name.textContent = f.name;
+    els.ac3Hint.textContent = 'Selected';
+    els.ac3Size.textContent = fmtSize(f.size);
+    els.slotAc3.classList.add('filled');
+    refreshGoState();
+  });
+
+  // basic drag & drop support on the slots
+  function wireDrop(slot, input){
+    ['dragover','dragenter'].forEach(evt => slot.addEventListener(evt, e => {
+      e.preventDefault(); slot.style.borderColor = 'var(--amber)';
+    }));
+    ['dragleave','drop'].forEach(evt => slot.addEventListener(evt, e => {
+      e.preventDefault(); slot.style.borderColor = '';
+    }));
+    slot.addEventListener('drop', e => {
+      const f = e.dataTransfer.files[0];
+      if (!f) return;
+      const dt = new DataTransfer();
+      dt.items.add(f);
+      input.files = dt.files;
+      input.dispatchEvent(new Event('change'));
+    });
+  }
+  wireDrop(els.slotMkv, els.mkvInput);
+  wireDrop(els.slotAc3, els.ac3Input);
+
+  function logLine(msg){
+    els.log.textContent += msg + '\n';
+    els.log.scrollTop = els.log.scrollHeight;
+  }
+
+  function setStage(label, pct){
+    els.stageLabel.textContent = label;
+    if (pct != null){
+      els.pct.textContent = Math.round(pct) + '%';
+      els.barFill.style.width = Math.round(pct) + '%';
+    }
+  }
+
+  function showError(msg){
+    els.errorBox.textContent = msg;
+    els.errorBox.classList.add('show');
+  }
+
+  els.goBtn.addEventListener('click', async () => {
+    els.errorBox.classList.remove('show');
+    els.result.classList.remove('show');
+    els.goBtn.disabled = true;
+    els.status.classList.add('show');
+    meterEl.classList.add('live');
+    els.log.textContent = '';
+    setStage('Loading FFmpeg core…', 2);
+
+    try {
+      if (!ffmpeg){
+        const { FFmpeg } = await import('https://esm.sh/@ffmpeg/ffmpeg@0.12.10');
+        const { fetchFile, toBlobURL } = await import('https://esm.sh/@ffmpeg/util@0.12.1');
+        window.__fetchFile = fetchFile;
+
+        ffmpeg = new FFmpeg();
+        ffmpeg.on('log', ({ message }) => logLine(message));
+        ffmpeg.on('progress', ({ progress }) => {
+          if (progress >= 0 && progress <= 1) setStage('Merging streams…', 15 + progress * 80);
+        });
+
+        const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
+        await ffmpeg.load({
+          coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
+          wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
+        });
+      }
+
+      setStage('Reading files into browser memory…', 10);
+      const fetchFile = window.__fetchFile;
+      await ffmpeg.writeFile('input.mkv', await fetchFile(mkvFile));
+      await ffmpeg.writeFile('input.ac3', await fetchFile(ac3File));
+
+      const mode = els.mode.value; // 'add' or 'replace'
+      let args;
+      if (mode === 'replace'){
+        args = ['-i','input.mkv','-i','input.ac3',
+                '-map','0:v','-map','1:a',
+                '-map','0:s?','-c','copy','output.mkv'];
+      } else {
+        args = ['-i','input.mkv','-i','input.ac3',
+                '-map','0:v','-map','0:a?','-map','1:a',
+                '-map','0:s?','-c','copy','output.mkv'];
+      }
+
+      setStage('Merging streams…', 15);
+      await ffmpeg.exec(args);
+
+      setStage('Preparing download…', 96);
+      const data = await ffmpeg.readFile('output.mkv');
+      const blob = new Blob([data.buffer], { type: 'video/x-matroska' });
+      const url = URL.createObjectURL(blob);
+
+      const outName = mkvFile.name.replace(/\.mkv$/i, '') + '_merged.mkv';
+      els.dlBtn.href = url;
+      els.dlBtn.download = outName;
+      els.resultName.textContent = outName;
+      els.resultSize.textContent = '  ·  ' + fmtSize(blob.size);
+      els.result.classList.add('show');
+
+      setStage('Done', 100);
+      meterEl.classList.remove('live');
+    } catch (err) {
+      console.error(err);
+      meterEl.classList.remove('live');
+      showError('Merge failed: ' + (err && err.message ? err.message : String(err)) +
+        '. Very large files can exceed the in-browser memory limit — try a smaller file or check that the AC3 track matches the video length.');
+      setStage('Failed', 0);
+    } finally {
+      els.goBtn.disabled = false;
+      els.goBtn.textContent = 'Merge';
+    }
+  });
+</script>
+</body>
 </html>
