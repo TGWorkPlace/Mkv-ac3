@@ -351,9 +351,10 @@
   </div>
 
   <footer>
-    Best for files under a few hundred MB — the WebAssembly build is single-threaded and memory-limited, so very large sources may run out of memory in-tab.<br>
-    Stream copy is used throughout (no re-encode), so the merge is fast and lossless.
+    Inputs are mounted directly (no full in-memory copy), which raises the practical ceiling well past 2GB on a machine with enough RAM. The hard wall is the WebAssembly engine itself: it addresses a single ~4GB memory space, and the <em>output</em> file still gets built and read back through it — so a combined output size approaching ~3.5–4GB can still fail depending on your browser and available RAM.<br>
+    Stream copy is used throughout (no re-encode), so the merge itself is fast and lossless.
   </footer>
+  <p style="text-align:center;font-size:12px;color:var(--muted);margin-top:10px;">Working with files near/above that ceiling? A pure-JS EBML/MKV muxer (bypassing ffmpeg's wasm memory entirely) can go arbitrarily large by streaming the output straight to disk via the File System Access API — ask if you want that version.</p>
 </div>
 
 <script type="module">
@@ -520,19 +521,33 @@
         setStage('Downloading FFmpeg core (~30MB, first run only)…', 5);
         let loaded = false;
         let lastErr;
-        for (const baseURL of [
-          'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd',
-          'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd',
-        ]){
+        const cdnPairs = [
+          {
+            ffmpegBase: 'https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/esm',
+            coreBase: 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd',
+          },
+          {
+            ffmpegBase: 'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/esm',
+            coreBase: 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd',
+          },
+        ];
+        for (const { ffmpegBase, coreBase } of cdnPairs){
           try {
-            const coreURL = await withTimeout(toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'), 30000, 'downloading ffmpeg-core.js');
-            const wasmURL = await withTimeout(toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'), 30000, 'downloading ffmpeg-core.wasm');
-            await withTimeout(ffmpeg.load({ coreURL, wasmURL }), 30000, 'initializing ffmpeg core');
+            // Pulling all three as blob: URLs matters, not just for the
+            // wasm binary — ffmpeg.load() spins up a Worker, and browsers
+            // require Worker scripts to be same-origin as the page unless
+            // they're loaded from a blob: URL (which always inherits the
+            // page's own origin). Without this, hosting the page anywhere
+            // other than the CDN's own origin throws a SecurityError.
+            const coreURL = await withTimeout(toBlobURL(`${coreBase}/ffmpeg-core.js`, 'text/javascript'), 30000, 'downloading ffmpeg-core.js');
+            const wasmURL = await withTimeout(toBlobURL(`${coreBase}/ffmpeg-core.wasm`, 'application/wasm'), 45000, 'downloading ffmpeg-core.wasm');
+            const classWorkerURL = await withTimeout(toBlobURL(`${ffmpegBase}/worker.js`, 'text/javascript'), 30000, 'downloading worker.js');
+            await withTimeout(ffmpeg.load({ coreURL, wasmURL, classWorkerURL }), 30000, 'initializing ffmpeg core');
             loaded = true;
             break;
           } catch (e){
             lastErr = e;
-            logLine(`✗ core load failed from ${baseURL}: ${e.message}`);
+            logLine(`✗ core load failed from ${coreBase}: ${e.message}`);
           }
         }
         if (!loaded) throw lastErr;
